@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PROCURIGHTS Contract Viability Analyzer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #0f172a; }
+    .card { background: #1e293b; border: 1px solid #334155; }
+    .input-field { background: #0f172a; border: 1px solid #475569; color: #e2e8f0; }
+    .input-field:focus { border-color: #22d3d3; outline: none; }
+    .cost-input { border-color: #ef4444 !important; }
+    .charge-input { border-color: #22c55e !important; }
+    .btn-primary { background: linear-gradient(135deg, #06b6d4, #0891b2); }
+    .btn-danger { background: linear-gradient(135deg, #ef4444, #dc2626); }
+    .btn-success { background: linear-gradient(135deg, #22c55e, #16a34a); }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo } = React;
+
+const fmt = (n) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(n || 0);
+const fmtPct = (n) => `${(n * 100).toFixed(2)}%`;
+const fmtNum = (n) => new Intl.NumberFormat('en-US').format(Math.round(n || 0));
+
+const UNITS = ['day', 'month', 'rotation', 'one-time'];
+const BILLING_TYPES = [
+  { value: 'cost', label: 'We Pay Only' },
+  { value: 'all', label: 'Charge Client' },
+  { value: 'fixed', label: 'Fixed Qty' }
+];
+const DURATIONS = [12, 18, 24, 36, 48, 60];
+
+const defaultExpense = () => ({ id: Date.now(), name: '', cost: 0, charge: 0, unit: 'day', billingType: 'all', fixedQty: 1 });
+const defaultRole = () => ({
+  id: Date.now(), name: 'Technician', count: 1, weeksOn: 4, weeksOff: 4, payType: 'hourly',
+  hourlyPay: 0, monthlySalary: 0, billRate: 0, shiftHours: 12, expenses: [defaultExpense()]
+});
+
+function ExpenseRow({ expense, onChange, onRemove }) {
+  const update = (k, v) => onChange({ ...expense, [k]: v });
+  return (
+    <div className="grid grid-cols-12 gap-2 items-center mb-2 text-sm">
+      <input className="col-span-3 input-field rounded px-2 py-1" placeholder="Expense Name" value={expense.name} onChange={e => update('name', e.target.value)} />
+      <input type="number" className="col-span-2 input-field cost-input rounded px-2 py-1" placeholder="Our Cost" value={expense.cost || ''} onChange={e => update('cost', parseFloat(e.target.value) || 0)} />
+      <input type="number" className="col-span-2 input-field charge-input rounded px-2 py-1" placeholder="Client Charge" value={expense.charge || ''} onChange={e => update('charge', parseFloat(e.target.value) || 0)} />
+      <select className="col-span-2 input-field rounded px-2 py-1" value={expense.unit} onChange={e => update('unit', e.target.value)}>
+        {UNITS.map(u => <option key={u} value={u}>Per {u.charAt(0).toUpperCase() + u.slice(1)}</option>)}
+      </select>
+      <select className="col-span-2 input-field rounded px-2 py-1" value={expense.billingType} onChange={e => update('billingType', e.target.value)}>
+        {BILLING_TYPES.map(b => <option key={b.value} value={b.value}>{b.label}</option>)}
+      </select>
+      {expense.billingType === 'fixed' ? (
+        <input type="number" className="col-span-1 input-field rounded px-2 py-1" placeholder="Qty" value={expense.fixedQty || ''} onChange={e => update('fixedQty', parseInt(e.target.value) || 1)} />
+      ) : (
+        <button onClick={onRemove} className="col-span-1 text-red-400 hover:text-red-300 font-bold text-xl">&times;</button>
+      )}
+      {expense.billingType === 'fixed' && <button onClick={onRemove} className="text-red-400 hover:text-red-300 font-bold text-xl">&times;</button>}
+    </div>
+  );
+}
+
+function RoleCard({ role, onChange, onRemove }) {
+  const update = (k, v) => onChange({ ...role, [k]: v });
+  const updateExpense = (idx, exp) => { const exps = [...role.expenses]; exps[idx] = exp; update('expenses', exps); };
+  const addExpense = () => update('expenses', [...role.expenses, defaultExpense()]);
+  const removeExpense = (idx) => update('expenses', role.expenses.filter((_, i) => i !== idx));
+
+  return (
+    <div className="card rounded-xl p-5 mb-4">
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-cyan-400 font-bold text-lg">Role Configuration</h3>
+        <button onClick={onRemove} className="btn-danger px-3 py-1 rounded text-white text-sm">Remove Role</button>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 mb-4">
+        <div>
+          <label className="text-gray-400 text-xs">Role Name</label>
+          <input className="input-field w-full rounded px-3 py-2" value={role.name} onChange={e => update('name', e.target.value)} />
+        </div>
+        <div>
+          <label className="text-gray-400 text-xs">Staff Count</label>
+          <input type="number" min="1" className="input-field w-full rounded px-3 py-2" value={role.count} onChange={e => update('count', parseInt(e.target.value) || 1)} />
+        </div>
+        <div>
+          <label className="text-gray-400 text-xs">Weeks On</label>
+          <input type="number" min="1" className="input-field w-full rounded px-3 py-2" value={role.weeksOn} onChange={e => update('weeksOn', parseInt(e.target.value) || 1)} />
+        </div>
+        <div>
+          <label className="text-gray-400 text-xs">Weeks Off</label>
+          <input type="number" min="0" className="input-field w-full rounded px-3 py-2" value={role.weeksOff} onChange={e => update('weeksOff', parseInt(e.target.value) || 0)} />
+        </div>
+        <div>
+          <label className="text-gray-400 text-xs">Pay Type</label>
+          <select className="input-field w-full rounded px-3 py-2" value={role.payType} onChange={e => update('payType', e.target.value)}>
+            <option value="hourly">Hourly</option>
+            <option value="salaried">Salaried</option>
+          </select>
+        </div>
+        {role.payType === 'hourly' ? (
+          <div>
+            <label className="text-gray-400 text-xs">Hourly Pay (Cost)</label>
+            <input type="number" className="input-field cost-input w-full rounded px-3 py-2" value={role.hourlyPay || ''} onChange={e => update('hourlyPay', parseFloat(e.target.value) || 0)} />
+          </div>
+        ) : (
+          <div>
+            <label className="text-gray-400 text-xs">Monthly Salary (Cost)</label>
+            <input type="number" className="input-field cost-input w-full rounded px-3 py-2" value={role.monthlySalary || ''} onChange={e => update('monthlySalary', parseFloat(e.target.value) || 0)} />
+          </div>
+        )}
+        <div>
+          <label className="text-gray-400 text-xs">Bill Rate $/hr</label>
+          <input type="number" className="input-field charge-input w-full rounded px-3 py-2" value={role.billRate || ''} onChange={e => update('billRate', parseFloat(e.target.value) || 0)} />
+        </div>
+        <div>
+          <label className="text-gray-400 text-xs">Shift Hours/Day</label>
+          <input type="number" min="1" max="24" className="input-field w-full rounded px-3 py-2" value={role.shiftHours} onChange={e => update('shiftHours', parseInt(e.target.value) || 8)} />
+        </div>
+      </div>
+      <div className="border-t border-slate-600 pt-4">
+        <div className="flex justify-between items-center mb-3">
+          <h4 className="text-cyan-300 font-semibold">Expenses & Reimbursables</h4>
+          <button onClick={addExpense} className="btn-primary px-3 py-1 rounded text-white text-sm">+ Add Expense</button>
+        </div>
+        <div className="grid grid-cols-12 gap-2 text-xs text-gray-500 mb-2 px-1">
+          <span className="col-span-3">Name</span>
+          <span className="col-span-2 text-red-400">Our Cost</span>
+          <span className="col-span-2 text-green-400">Client Charge</span>
+          <span className="col-span-2">Unit</span>
+          <span className="col-span-2">Billing Type</span>
+        </div>
+        {role.expenses.map((exp, idx) => (
+          <ExpenseRow key={exp.id} expense={exp} onChange={e => updateExpense(idx, e)} onRemove={() => removeExpense(idx)} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ResultCard({ title, value, color, subtitle }) {
+  const colors = { green: 'from-green-600 to-green-800', red: 'from-red-600 to-red-800', orange: 'from-orange-500 to-yellow-600', cyan: 'from-cyan-600 to-cyan-800' };
+  return (
+    <div className={`bg-gradient-to-br ${colors[color]} rounded-xl p-5 text-center`}>
+      <p className="text-white/80 text-sm font-medium mb-1">{title}</p>
+      <p className="text-white text-2xl font-bold">{value}</p>
+      {subtitle && <p className="text-white/70 text-xs mt-1">{subtitle}</p>}
+    </div>
+  );
+}
+
+function App() {
+  const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
+  const [durationMonths, setDurationMonths] = useState(12);
+  const [roles, setRoles] = useState([defaultRole()]);
+  const [clientName, setClientName] = useState('');
+  const [projectName, setProjectName] = useState('');
+
+  const updateRole = (idx, r) => { const rs = [...roles]; rs[idx] = r; setRoles(rs); };
+  const addRole = () => setRoles([...roles, defaultRole()]);
+  const removeRole = (idx) => setRoles(roles.filter((_, i) => i !== idx));
+
+  const calculations = useMemo(() => {
+    const months = durationMonths;
+    const totalDaysBase = Math.round(months * 30.44);
+    const maxCycle = Math.max(...roles.map(r => (r.weeksOn || 1) + (r.weeksOff || 0)), 1);
+    const rotations = Math.ceil(totalDaysBase / (maxCycle * 7));
+    const totalDays = rotations * maxCycle * 7;
+    const totalWeeks = totalDays / 7;
+
+    let totalOurCost = 0, totalClientPays = 0, totalManHours = 0, totalStaff = 0;
+    let totalLaborCost = 0, totalLaborRevenue = 0, totalExpenseCost = 0, totalExpenseRevenue = 0;
+
+    const roleDetails = roles.map(r => {
+      const cycle = (r.weeksOn || 1) + (r.weeksOff || 0);
+      const onSiteDays = (r.weeksOn || 1) * 7 * rotations * (r.count || 1);
+      const onSiteWeeks = (r.weeksOn || 1) * rotations * (r.count || 1);
+      const offSiteWeeks = (r.weeksOff || 0) * rotations * (r.count || 1);
+      const manHours = onSiteDays * (r.shiftHours || 8);
+      const hoursPerWeek = (r.weeksOn || 1) * 7 * (r.shiftHours || 8);
+      const avgHoursPerWeek = manHours / totalWeeks / (r.count || 1);
+      
+      totalManHours += manHours;
+      totalStaff += r.count || 1;
+
+      let laborCost = 0, laborRevenue = 0, expCost = 0, expRevenue = 0;
+      
+      if (r.payType === 'hourly') {
+        laborCost = manHours * (r.hourlyPay || 0);
+      } else {
+        laborCost = months * (r.monthlySalary || 0) * (r.count || 1);
+      }
+      laborRevenue = manHours * (r.billRate || 0);
+      
+      totalLaborCost += laborCost;
+      totalLaborRevenue += laborRevenue;
+      totalOurCost += laborCost;
+      totalClientPays += laborRevenue;
+
+      const expenseDetails = (r.expenses || []).map(e => {
+        let multiplier = 1;
+        if (e.unit === 'day') multiplier = onSiteDays;
+        else if (e.unit === 'month') multiplier = months * (r.count || 1);
+        else if (e.unit === 'rotation') multiplier = rotations * (r.count || 1);
+        else if (e.unit === 'one-time') multiplier = r.count || 1;
+
+        let cost = 0, revenue = 0;
+        if (e.billingType === 'cost') {
+          cost = (e.cost || 0) * multiplier;
+        } else if (e.billingType === 'all') {
+          cost = (e.cost || 0) * multiplier;
+          revenue = (e.charge || 0) * multiplier;
+        } else if (e.billingType === 'fixed') {
+          cost = (e.cost || 0) * (e.fixedQty || 1);
+          revenue = (e.charge || 0) * (e.fixedQty || 1);
+        }
+        
+        expCost += cost;
+        expRevenue += revenue;
+        return { ...e, totalCost: cost, totalRevenue: revenue, multiplier };
+      });
+
+      totalExpenseCost += expCost;
+      totalExpenseRevenue += expRevenue;
+      totalOurCost += expCost;
+      totalClientPays += expRevenue;
+
+      return {
+        ...r, manHours, onSiteDays, onSiteWeeks, offSiteWeeks, laborCost, laborRevenue,
+        expenseCost: expCost, expenseRevenue: expRevenue, expenseDetails, avgHoursPerWeek,
+        billableHoursPerRotation: (r.weeksOn || 1) * 7 * (r.shiftHours || 8)
+      };
+    });
+
+    const profit = totalClientPays - totalOurCost;
+    const margin = totalClientPays > 0 ? profit / totalClientPays : 0;
+    const markup = totalOurCost > 0 ? profit / totalOurCost : 0;
+
+    return {
+      months, totalDays, totalWeeks, maxCycle, rotations, totalOurCost, totalClientPays,
+      profit, margin, markup, totalManHours, totalStaff, roleDetails,
+      totalLaborCost, totalLaborRevenue, totalExpenseCost, totalExpenseRevenue,
+      revPerDay: totalDays > 0 ? totalClientPays / totalDays : 0,
+      revPerWeek: totalWeeks > 0 ? totalClientPays / totalWeeks : 0,
+      revPerMonth: months > 0 ? totalClientPays / months : 0,
+      revPerYear: totalClientPays / (months / 12),
+      costPerDay: totalDays > 0 ? totalOurCost / totalDays : 0,
+      costPerWeek: totalWeeks > 0 ? totalOurCost / totalWeeks : 0,
+      costPerMonth: months > 0 ? totalOurCost / months : 0,
+      effectiveBillRate: totalManHours > 0 ? totalClientPays / totalManHours : 0,
+      effectiveCostRate: totalManHours > 0 ? totalOurCost / totalManHours : 0,
+      billableHoursPerWeek: totalWeeks > 0 ? totalManHours / totalWeeks : 0,
+      billableHoursPerMonth: months > 0 ? totalManHours / months : 0
+    };
+  }, [roles, durationMonths]);
+
+  const generatePDF = () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF('p', 'mm', 'a4');
+    const W = 210, H = 297, M = 15;
+    const cW = W - M * 2;
+    let y = M;
+
+    const colors = { primary: [6, 182, 212], dark: [15, 23, 42], card: [30, 41, 59], green: [34, 197, 94], red: [239, 68, 68], orange: [249, 115, 22], gray: [148, 163, 184] };
+    
+    const addPage = () => { doc.addPage(); y = M; };
+    const checkPage = (h) => { if (y + h > H - M) addPage(); };
+    
+    const drawRect = (x, yPos, w, h, col, radius = 2) => {
+      doc.setFillColor(...col);
+      doc.roundedRect(x, yPos, w, h, radius, radius, 'F');
+    };
+
+    const drawText = (text, x, yPos, size = 10, col = [255,255,255], align = 'left', bold = false) => {
+      doc.setFontSize(size);
+      doc.setTextColor(...col);
+      doc.setFont('helvetica', bold ? 'bold' : 'normal');
+      doc.text(text, x, yPos, { align });
+    };
+
+    const drawTable = (headers, rows, startY, colWidths) => {
+      const rowH = 8, headerH = 10;
+      let tY = startY;
+      
+      drawRect(M, tY, cW, headerH, colors.primary);
+      let xPos = M + 2;
+      headers.forEach((h, i) => {
+        drawText(h, xPos, tY + 7, 9, [255,255,255], 'left', true);
+        xPos += colWidths[i];
+      });
+      tY += headerH;
+
+      rows.forEach((row, rIdx) => {
+        checkPage(rowH + 5);
+        if (y !== startY && tY < M + 5) tY = y;
+        drawRect(M, tY, cW, rowH, rIdx % 2 === 0 ? colors.card : colors.dark);
+        xPos = M + 2;
+        row.forEach((cell, i) => {
+          drawText(String(cell), xPos, tY + 5.5, 8, [226, 232, 240]);
+          xPos += colWidths[i];
+        });
+        tY += rowH;
+      });
+      return tY + 5;
+    };
+
+    // Header
+    drawRect(0, 0, W, 45, colors.dark);
+    drawRect(M, 10, cW, 30, colors.card, 4);
+    drawText('PROCURIGHTS', W/2, 22, 20, colors.primary, 'center', true);
+    drawText('Internal Contract Viability Analysis Report', W/2, 32, 11, colors.gray, 'center');
+    y = 55;
+
+    // Report Info
+    drawRect(M, y, cW, 28, colors.card, 3);
+    drawText('REPORT INFORMATION', M + 5, y + 8, 11, colors.primary, 'left', true);
+    const reportDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const endDate = new Date(startDate);
+    endDate.setMonth(endDate.getMonth() + durationMonths);
+    
+    drawText(`Client: ${clientName || 'N/A'}`, M + 5, y + 16, 9, [226,232,240]);
+    drawText(`Project: ${projectName || 'N/A'}`, M + 70, y + 16, 9, [226,232,240]);
+    drawText(`Report Generated: ${reportDate}`, M + 135, y + 16, 9, [226,232,240]);
+    drawText(`Contract Period: ${startDate} to ${endDate.toISOString().split('T')[0]}`, M + 5, y + 23, 9, [226,232,240]);
+    drawText(`Duration: ${durationMonths} Months`, M + 90, y + 23, 9, [226,232,240]);
+    y += 35;
+
+    // Executive Summary
+    drawText('EXECUTIVE SUMMARY', M, y, 12, colors.primary, 'left', true);
+    y += 8;
+    
+    const cardW = (cW - 10) / 3;
+    [[`${fmt(calculations.totalClientPays)}`, 'TOTAL REVENUE', colors.green],
+     [`${fmt(calculations.totalOurCost)}`, 'TOTAL COST', colors.red],
+     [`${fmt(calculations.profit)}`, `NET PROFIT (${fmtPct(calculations.margin)})`, calculations.profit >= 0 ? colors.orange : colors.red]
+    ].forEach((c, i) => {
+      const xPos = M + i * (cardW + 5);
+      drawRect(xPos, y, cardW, 22, c[2], 3);
+      drawText(c[0], xPos + cardW/2, y + 10, 14, [255,255,255], 'center', true);
+      drawText(c[1], xPos + cardW/2, y + 18, 8, [255,255,255,180], 'center');
+    });
+    y += 30;
+
+    // Contract Parameters
+    drawText('CONTRACT PARAMETERS', M, y, 12, colors.primary, 'left', true);
+    y += 6;
+    y = drawTable(
+      ['Parameter', 'Value', 'Parameter', 'Value'],
+      [
+        ['Contract Duration', `${durationMonths} Months`, 'Total Days', fmtNum(calculations.totalDays)],
+        ['Total Weeks', fmtNum(calculations.totalWeeks), 'Total Rotations', calculations.rotations],
+        ['Max Rotation Cycle', `${calculations.maxCycle} Weeks`, 'Total Staff', calculations.totalStaff],
+        ['Total Billable Hours', fmtNum(calculations.totalManHours), 'Hours/Week (Avg)', fmtNum(calculations.billableHoursPerWeek)],
+        ['Hours/Month (Avg)', fmtNum(calculations.billableHoursPerMonth), 'Effective Bill Rate', fmt(calculations.effectiveBillRate)],
+      ],
+      y, [45, 40, 50, 45]
+    );
+
+    // Financial Breakdown
+    checkPage(60);
+    drawText('FINANCIAL BREAKDOWN', M, y, 12, colors.primary, 'left', true);
+    y += 6;
+    y = drawTable(
+      ['Category', 'Our Cost', 'Client Revenue', 'Profit/Loss'],
+      [
+        ['Labor', fmt(calculations.totalLaborCost), fmt(calculations.totalLaborRevenue), fmt(calculations.totalLaborRevenue - calculations.totalLaborCost)],
+        ['Expenses & Reimbursables', fmt(calculations.totalExpenseCost), fmt(calculations.totalExpenseRevenue), fmt(calculations.totalExpenseRevenue - calculations.totalExpenseCost)],
+        ['TOTAL', fmt(calculations.totalOurCost), fmt(calculations.totalClientPays), fmt(calculations.profit)],
+      ],
+      y, [55, 40, 45, 40]
+    );
+
+    // Revenue & Cost Analysis
+    checkPage(50);
+    drawText('REVENUE & COST ANALYSIS', M, y, 12, colors.primary, 'left', true);
+    y += 6;
+    y = drawTable(
+      ['Metric', 'Revenue', 'Cost', 'Net'],
+      [
+        ['Per Day', fmt(calculations.revPerDay), fmt(calculations.costPerDay), fmt(calculations.revPerDay - calculations.costPerDay)],
+        ['Per Week', fmt(calculations.revPerWeek), fmt(calculations.costPerWeek), fmt(calculations.revPerWeek - calculations.costPerWeek)],
+        ['Per Month', fmt(calculations.revPerMonth), fmt(calculations.costPerMonth), fmt(calculations.revPerMonth - calculations.costPerMonth)],
+        ['Per Year', fmt(calculations.revPerYear), fmt(calculations.costPerMonth * 12), fmt(calculations.revPerYear - calculations.costPerMonth * 12)],
+        ['Per Hour (Effective)', fmt(calculations.effectiveBillRate), fmt(calculations.effectiveCostRate), fmt(calculations.effectiveBillRate - calculations.effectiveCostRate)],
+      ],
+      y, [45, 40, 40, 40]
+    );
+
+    // Role Details
+    calculations.roleDetails.forEach((r, idx) => {
+      checkPage(80);
+      drawText(`ROLE ${idx + 1}: ${r.name.toUpperCase()}`, M, y, 12, colors.primary, 'left', true);
+      y += 6;
+      
+      y = drawTable(
+        ['Parameter', 'Value', 'Parameter', 'Value'],
+        [
+          ['Staff Count', r.count, 'Pay Type', r.payType === 'hourly' ? 'Hourly' : 'Salaried'],
+          ['Weeks On', r.weeksOn, 'Weeks Off', r.weeksOff],
+          ['Rotation Cycle', `${r.weeksOn + r.weeksOff} Weeks`, 'Shift Hours/Day', r.shiftHours],
+          ['Hourly Pay (Cost)', r.payType === 'hourly' ? fmt(r.hourlyPay) : 'N/A', 'Bill Rate', fmt(r.billRate)],
+          ['Monthly Salary', r.payType === 'salaried' ? fmt(r.monthlySalary) : 'N/A', 'Spread', fmt(r.billRate - (r.hourlyPay || 0))],
+        ],
+        y, [45, 40, 50, 45]
+      );
+
+      checkPage(40);
+      drawText(`${r.name} - Hours & Financial Summary`, M, y, 10, [226,232,240], 'left', true);
+      y += 5;
+      y = drawTable(
+        ['Metric', 'Per Rotation', 'Per Month', 'Contract Total'],
+        [
+          ['Billable Hours', fmtNum(r.billableHoursPerRotation), fmtNum(r.manHours / durationMonths), fmtNum(r.manHours)],
+          ['On-Site Days', fmtNum(r.weeksOn * 7 * r.count), fmtNum(r.onSiteDays / durationMonths), fmtNum(r.onSiteDays)],
+          ['Labor Revenue', fmt(r.billableHoursPerRotation * r.billRate * r.count), fmt(r.laborRevenue / durationMonths), fmt(r.laborRevenue)],
+          ['Labor Cost', fmt(r.laborCost / calculations.rotations), fmt(r.laborCost / durationMonths), fmt(r.laborCost)],
+        ],
+        y, [45, 40, 45, 50]
+      );
+
+      if (r.expenseDetails.filter(e => e.name).length > 0) {
+        checkPage(30);
+        drawText(`${r.name} - Expenses`, M, y, 10, [226,232,240], 'left', true);
+        y += 5;
+        y = drawTable(
+          ['Expense', 'Unit', 'Our Cost', 'Client Charge', 'Total Cost', 'Total Revenue'],
+          r.expenseDetails.filter(e => e.name).map(e => [
+            e.name, e.unit, fmt(e.cost), fmt(e.charge), fmt(e.totalCost), fmt(e.totalRevenue)
+          ]),
+          y, [35, 25, 28, 28, 32, 32]
+        );
+      }
+    });
+
+    // Profitability Metrics
+    checkPage(50);
+    drawText('PROFITABILITY METRICS', M, y, 12, colors.primary, 'left', true);
+    y += 6;
+    y = drawTable(
+      ['Metric', 'Value', 'Metric', 'Value'],
+      [
+        ['Gross Profit', fmt(calculations.profit), 'Profit Margin', fmtPct(calculations.margin)],
+        ['Markup on Cost', fmtPct(calculations.markup), 'Break-Even Revenue', fmt(calculations.totalOurCost)],
+        ['Revenue per Employee', fmt(calculations.totalClientPays / calculations.totalStaff), 'Cost per Employee', fmt(calculations.totalOurCost / calculations.totalStaff)],
+        ['Profit per Employee', fmt(calculations.profit / calculations.totalStaff), 'Profit per Rotation', fmt(calculations.profit / calculations.rotations)],
+      ],
+      y, [50, 40, 45, 45]
+    );
+
+    // Viability Assessment
+    checkPage(40);
+    drawText('VIABILITY ASSESSMENT', M, y, 12, colors.primary, 'left', true);
+    y += 8;
+    
+    const viable = calculations.margin >= 0.15;
+    const marginal = calculations.margin >= 0.05 && calculations.margin < 0.15;
+    const status = viable ? 'VIABLE' : marginal ? 'MARGINAL' : 'NOT VIABLE';
+    const statusColor = viable ? colors.green : marginal ? colors.orange : colors.red;
+    
+    drawRect(M, y, cW, 25, colors.card, 3);
+    drawRect(M + 5, y + 5, 50, 15, statusColor, 2);
+    drawText(status, M + 30, y + 15, 12, [255,255,255], 'center', true);
+    
+    const assessment = viable 
+      ? `This contract shows strong profitability with a ${fmtPct(calculations.margin)} margin. Recommended to proceed.`
+      : marginal 
+        ? `This contract shows marginal profitability at ${fmtPct(calculations.margin)}. Review costs and negotiate better rates if possible.`
+        : `This contract is not profitable at ${fmtPct(calculations.margin)} margin. Significant cost reduction or rate increases required.`;
+    
+    doc.setFontSize(9);
+    doc.setTextColor(226, 232, 240);
+    const splitText = doc.splitTextToSize(assessment, cW - 70);
+    doc.text(splitText, M + 60, y + 12);
+    y += 35;
+
+    // Footer on last page
+    const pageCount = doc.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      drawRect(0, H - 15, W, 15, colors.card);
+      drawText(`PROCURIGHTS Internal Report - Confidential`, M, H - 6, 8, colors.gray);
+      drawText(`Page ${i} of ${pageCount}`, W - M, H - 6, 8, colors.gray, 'right');
+    }
+
+    doc.save(`PROCURIGHTS_Viability_Report_${startDate}.pdf`);
+  };
+
+  return (
+    <div className="min-h-screen text-slate-200 p-6">
+      <header className="text-center mb-8">
+        <h1 className="text-3xl font-bold text-cyan-400 mb-1">PROCURIGHTS</h1>
+        <p className="text-slate-400">Internal Rotational Contract Viability Analyzer</p>
+      </header>
+
+      <section className="card rounded-xl p-5 mb-6">
+        <h2 className="text-cyan-400 font-bold text-lg mb-4">Global Contract Parameters</h2>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          <div>
+            <label className="text-gray-400 text-xs">Client Name</label>
+            <input className="input-field w-full rounded px-3 py-2" value={clientName} onChange={e => setClientName(e.target.value)} placeholder="Client Co." />
+          </div>
+          <div>
+            <label className="text-gray-400 text-xs">Project Name</label>
+            <input className="input-field w-full rounded px-3 py-2" value={projectName} onChange={e => setProjectName(e.target.value)} placeholder="Project Alpha" />
+          </div>
+          <div>
+            <label className="text-gray-400 text-xs">Project Start Date</label>
+            <input type="date" className="input-field w-full rounded px-3 py-2" value={startDate} onChange={e => setStartDate(e.target.value)} />
+          </div>
+          <div>
+            <label className="text-gray-400 text-xs">Duration (Months)</label>
+            <select className="input-field w-full rounded px-3 py-2" value={durationMonths} onChange={e => setDurationMonths(parseInt(e.target.value))}>
+              {DURATIONS.map(d => <option key={d} value={d}>{d} Months</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-gray-400 text-xs">Max Cycle</label>
+            <div className="input-field rounded px-3 py-2 bg-slate-800">{calculations.maxCycle} wks</div>
+          </div>
+          <div>
+            <label className="text-gray-400 text-xs">Total Rotations</label>
+            <div className="input-field rounded px-3 py-2 bg-slate-800">{calculations.rotations}</div>
+          </div>
+        </div>
+      </section>
+
+      <section className="mb-6">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-cyan-400 font-bold text-lg">Role Configurations</h2>
+          <button onClick={addRole} className="btn-primary px-4 py-2 rounded-lg text-white font-medium">+ Add Role</button>
+        </div>
+        {roles.map((r, idx) => (
+          <RoleCard key={r.id} role={r} onChange={role => updateRole(idx, role)} onRemove={() => removeRole(idx)} />
+        ))}
+      </section>
+
+      <section className="card rounded-xl p-6 mb-6">
+        <h2 className="text-center text-2xl font-bold text-cyan-400 mb-6 border-b border-slate-600 pb-3">INTERNAL VIABILITY REPORT</h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <ResultCard title="CLIENT PAYS (Total Revenue)" value={fmt(calculations.totalClientPays)} color="green" />
+          <ResultCard title="WE PAY (Our Total Cost)" value={fmt(calculations.totalOurCost)} color="red" />
+          <ResultCard title="NET PROFIT" value={fmt(calculations.profit)} color={calculations.profit >= 0 ? 'orange' : 'red'} subtitle={`Margin: ${fmtPct(calculations.margin)}`} />
+        </div>
+        
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          <div className="card p-3 rounded-lg text-center">
+            <p className="text-gray-400 text-xs">Total Staff</p>
+            <p className="text-white text-lg font-bold">{calculations.totalStaff}</p>
+          </div>
+          <div className="card p-3 rounded-lg text-center">
+            <p className="text-gray-400 text-xs">Total Rotations</p>
+            <p className="text-white text-lg font-bold">{calculations.rotations}</p>
+          </div>
+          <div className="card p-3 rounded-lg text-center">
+            <p className="text-gray-400 text-xs">Total Billable Hours</p>
+            <p className="text-white text-lg font-bold">{fmtNum(calculations.totalManHours)}</p>
+          </div>
+          <div className="card p-3 rounded-lg text-center">
+            <p className="text-gray-400 text-xs">Effective Bill Rate</p>
+            <p className="text-white text-lg font-bold">{fmt(calculations.effectiveBillRate)}/hr</p>
+          </div>
+        </div>
+
+        <h3 className="text-cyan-300 font-semibold mb-3">Billable Hours Breakdown</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          <div className="card p-3 rounded-lg text-center">
+            <p className="text-gray-400 text-xs">Hours / Week</p>
+            <p className="text-cyan-400 text-lg font-bold">{fmtNum(calculations.billableHoursPerWeek)}</p>
+          </div>
+          <div className="card p-3 rounded-lg text-center">
+            <p className="text-gray-400 text-xs">Hours / Month</p>
+            <p className="text-cyan-400 text-lg font-bold">{fmtNum(calculations.billableHoursPerMonth)}</p>
+          </div>
+          <div className="card p-3 rounded-lg text-center">
+            <p className="text-gray-400 text-xs">Hours / Rotation</p>
+            <p className="text-cyan-400 text-lg font-bold">{fmtNum(calculations.totalManHours / calculations.rotations)}</p>
+          </div>
+          <div className="card p-3 rounded-lg text-center">
+            <p className="text-gray-400 text-xs">Total Contract Hours</p>
+            <p className="text-cyan-400 text-lg font-bold">{fmtNum(calculations.totalManHours)}</p>
+          </div>
+        </div>
+
+        <h3 className="text-cyan-300 font-semibold mb-3">Revenue & Cost Analysis</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <ResultCard title="Revenue / Day" value={fmt(calculations.revPerDay)} color="cyan" />
+          <ResultCard title="Revenue / Week" value={fmt(calculations.revPerWeek)} color="cyan" />
+          <ResultCard title="Revenue / Month" value={fmt(calculations.revPerMonth)} color="cyan" />
+          <ResultCard title="Revenue / Year" value={fmt(calculations.revPerYear)} color="cyan" />
+        </div>
+      </section>
+
+      <div className="text-center">
+        <button onClick={generatePDF} className="btn-success px-8 py-3 rounded-xl text-white font-bold text-lg shadow-lg hover:scale-105 transition-transform">
+          📄 Export Professional PDF Report
+        </button>
+        <p className="text-gray-500 text-sm mt-2">Generates a comprehensive multi-page report with all contract details</p>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
